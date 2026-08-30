@@ -19,7 +19,9 @@ data class ReportEntity(
     val receipt:String,
     val pdfPath:String="",
     val submittedAt:Long=System.currentTimeMillis(),
-    val status:String="submitted"
+    val status:String="submitted",
+    val reviewNote:String="",
+    val reviewedAt:String=""
 )
 
 @Dao interface MissionDao{
@@ -38,9 +40,10 @@ data class ReportEntity(
 @Dao interface ReportDao{
  @Query("SELECT * FROM reports ORDER BY submittedAt DESC") fun observe():Flow<List<ReportEntity>>
  @Insert(onConflict=OnConflictStrategy.REPLACE) suspend fun save(x:ReportEntity)
+ @Query("UPDATE reports SET status=:status, reviewNote=:note, reviewedAt=:reviewedAt WHERE missionKey=:missionKey") suspend fun updateReview(missionKey:String,status:String,note:String,reviewedAt:String)
 }
 
-@Database(entities=[MissionEntity::class,DraftEntity::class,ReportEntity::class],version=2,exportSchema=false)
+@Database(entities=[MissionEntity::class,DraftEntity::class,ReportEntity::class],version=3,exportSchema=false)
 abstract class BazrDb:RoomDatabase(){
  abstract fun missions():MissionDao
  abstract fun drafts():DraftDao
@@ -52,6 +55,7 @@ abstract class BazrDb:RoomDatabase(){
     db.execSQL("CREATE TABLE IF NOT EXISTS `reports` (`missionKey` TEXT NOT NULL, `title` TEXT NOT NULL, `date` TEXT NOT NULL, `type` TEXT NOT NULL, `receipt` TEXT NOT NULL, `pdfPath` TEXT NOT NULL, `submittedAt` INTEGER NOT NULL, `status` TEXT NOT NULL, PRIMARY KEY(`missionKey`))")
    }
   }
-  fun get(c:Context)=I?:synchronized(this){I?:Room.databaseBuilder(c.applicationContext,BazrDb::class.java,"bazr_mobile.db").addMigrations(MIGRATION_1_2).build().also{I=it}}
+  private val MIGRATION_2_3 = object: Migration(2,3){ override fun migrate(db: SupportSQLiteDatabase){ db.execSQL("ALTER TABLE `reports` ADD COLUMN `reviewNote` TEXT NOT NULL DEFAULT ''"); db.execSQL("ALTER TABLE `reports` ADD COLUMN `reviewedAt` TEXT NOT NULL DEFAULT ''") } }
+  fun get(c:Context)=I?:synchronized(this){I?:Room.databaseBuilder(c.applicationContext,BazrDb::class.java,"bazr_mobile.db").addMigrations(MIGRATION_1_2,MIGRATION_2_3).build().also{I=it}}
  }
 }

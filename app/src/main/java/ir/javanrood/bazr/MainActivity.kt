@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.graphics.BitmapFactory
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.Image
@@ -22,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
@@ -31,8 +33,10 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
 
 private val Navy = Color(0xFF0B2742)
 private val Navy2 = Color(0xFF102E4D)
@@ -43,14 +47,29 @@ private val Muted = Color(0xFF6F7782)
 private val Line = Color(0xFFE4E7EB)
 private val SoftGold = Color(0xFFF7F0E2)
 private val Success = Color(0xFF287A58)
+private data class MissionSchedule(val state:String,val label:String,val canExecute:Boolean)
+private fun missionSchedule(m:MissionEntity):MissionSchedule {
+    val p=runCatching{org.json.JSONObject(m.payload)}.getOrElse{org.json.JSONObject()}
+    val st=p.optString("schedule_state", if(m.submitted) "submitted" else "active")
+    return when(st){
+        "expired" -> MissionSchedule(st,"منقضی شده",false)
+        "upcoming" -> MissionSchedule(st,"فعال در تاریخ ${m.date.ifBlank { "موعد مأموریت" }}",false)
+        "invalid" -> MissionSchedule(st,"تاریخ مأموریت نامعتبر",false)
+        "submitted" -> MissionSchedule(st,"ارسال شده",false)
+        else -> MissionSchedule("active","فعال امروز",!m.submitted)
+    }
+}
+
 
 class MainActivity : FragmentActivity() {
     private var cameraPermissionCallback: ((Boolean) -> Unit)? = null
     private var documentResultCallback: ((Uri?) -> Unit)? = null
+    private var locationPermissionCallback: ((Boolean) -> Unit)? = null
 
     companion object {
         private const val REQ_CAMERA_PERMISSION = 1201
         private const val REQ_DOCUMENT = 1202
+        private const val REQ_LOCATION_PERMISSION = 1203
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,6 +105,12 @@ class MainActivity : FragmentActivity() {
         requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA_PERMISSION)
     }
 
+    fun requestLocationPermissionCompat(callback: (Boolean) -> Unit) {
+        if (LocationCapture.hasPermission(this)) { callback(true); return }
+        locationPermissionCallback = callback
+        requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), REQ_LOCATION_PERMISSION)
+    }
+
     @Suppress("DEPRECATION")
     fun openEvidenceDocumentCompat(callback: (Uri?) -> Unit) {
         documentResultCallback = callback
@@ -108,6 +133,10 @@ class MainActivity : FragmentActivity() {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             cameraPermissionCallback?.invoke(granted)
             cameraPermissionCallback = null
+        } else if (requestCode == REQ_LOCATION_PERMISSION) {
+            val granted = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+            locationPermissionCallback?.invoke(granted)
+            locationPermissionCallback = null
         }
     }
 
@@ -190,7 +219,7 @@ fun BazrApp(openBio: ((() -> Unit)) -> Unit, vm: BazrViewModel = viewModel()) {
                     onOpen = { openBio { vm.biometricUnlocked() } }
                 )
                 "governor" -> {
-                    Box(Modifier.weight(1f)) { GovernorPanel(state = state, tab = tab) }
+                    Box(Modifier.weight(1f)) { GovernorPanel(state = state, tab = tab, vm = vm) }
                     GovernorBottomNav(tab = tab, onSelect = { tab = it })
                 }
                 else -> {
@@ -345,7 +374,7 @@ private fun BiometricPage(name: String, message: String, onOpen: () -> Unit) {
 
 @Composable
 private fun InspectorHome(state: UiState, onMission: (MissionEntity) -> Unit) {
-    val next = state.missions.firstOrNull { !it.submitted }
+    val pending = state.missions.filter { !it.submitted }; val next = pending.sortedWith(compareBy<MissionEntity>({ when(missionSchedule(it).state){"active"->0;"upcoming"->1;else->2} },{ it.date })).firstOrNull()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -358,7 +387,7 @@ private fun InspectorHome(state: UiState, onMission: (MissionEntity) -> Unit) {
         if (state.message.isNotBlank()) item { StatusBanner(state.message) }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SummaryCard("ماموریت امروز", state.missions.count { !it.submitted }.toString(), "مأموریت فعال", Modifier.weight(1f))
+                SummaryCard("ماموریت امروز", state.missions.count { !it.submitted && missionSchedule(it).state=="active" }.toString(), "مأموریت فعال", Modifier.weight(1f))
                 SummaryCard("نیازمند پیگیری", "۰", "مورد باز", Modifier.weight(1f))
             }
         }
@@ -403,13 +432,17 @@ private fun ReportsArchivePage(reports: List<ReportEntity>, missions: List<Missi
                 Column(Modifier.padding(15.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("اداره بازرسی‌شده: $orgName", fontWeight = FontWeight.Bold, color = Navy, modifier = Modifier.weight(1f))
-                        Surface(color = if (r.status == "complete") Color(0xFFE9F4EF) else SoftGold, shape = RoundedCornerShape(9.dp)) {
-                            Text(if (r.status == "complete") "بایگانی شد" else "PDF در انتظار", Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = if (r.status == "complete") Success else Color(0xFF8A641F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        val reviewLabel = when(r.status){ "approved" -> "تأیید نهایی شد"; "returned" -> "نیازمند اصلاح"; "supervisor_review" -> "در حال بررسی سرپرست"; "pending_review", "complete" -> "در انتظار بررسی"; "pdf_pending" -> "ارسال شد / PDF در انتظار"; else -> "ارسال شده" }
+                        val reviewOk = r.status == "approved"
+                        Surface(color = if (reviewOk) Color(0xFFE9F4EF) else SoftGold, shape = RoundedCornerShape(9.dp)) {
+                            Text(reviewLabel, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = if (reviewOk) Success else Color(0xFF8A641F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Spacer(Modifier.height(7.dp))
                     Text("${r.date}  •  ${r.type}", color = Muted, fontSize = 12.sp)
                     Text("کد رسید: ${r.receipt}", color = Gold, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    if (r.reviewNote.isNotBlank()) Text("پیام بررسی: ${r.reviewNote}", color = Color(0xFF8A641F), fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    if (r.status == "approved" && r.reviewedAt.isNotBlank()) Text("تاریخ تأیید: ${r.reviewedAt}", color = Success, fontSize = 11.sp)
                     if (r.pdfPath.isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -428,23 +461,21 @@ private fun ReportsArchivePage(reports: List<ReportEntity>, missions: List<Missi
 
 @Composable
 private fun MissionHighlight(m: MissionEntity, onMission: (MissionEntity) -> Unit) {
+    val schedule=missionSchedule(m)
     Card(
-        modifier = Modifier.fillMaxWidth().clickable { onMission(m) },
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        modifier = Modifier.fillMaxWidth().clickable(enabled=schedule.canExecute) { onMission(m) },
+        shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(Modifier.padding(17.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(m.title, fontWeight = FontWeight.ExtraBold, color = Navy, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(8.dp))
-                Surface(color = SoftGold, shape = RoundedCornerShape(10.dp)) { Text(m.type.ifBlank { "سرزده" }, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = Color(0xFF8A641F), fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                Text(m.title, fontWeight = FontWeight.ExtraBold, color = Navy, fontSize = 18.sp, modifier = Modifier.weight(1f)); Spacer(Modifier.width(8.dp))
+                Surface(color = if(schedule.state=="expired") Color(0xFFF7E8E8) else SoftGold, shape = RoundedCornerShape(10.dp)) { Text(m.type.ifBlank { "سرزده" }, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = if(schedule.state=="expired") Color(0xFF9B3A3A) else Color(0xFF8A641F), fontSize = 12.sp, fontWeight = FontWeight.Bold) }
             }
-            Spacer(Modifier.height(10.dp))
-            Text("تاریخ بازدید: ${m.date.ifBlank { "طبق برنامه مأموریت" }}", color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(10.dp)); Text("تاریخ بازدید: ${m.date.ifBlank { "طبق برنامه مأموریت" }}", color = Muted, fontSize = 13.sp)
+            Spacer(Modifier.height(5.dp)); Text(schedule.label, color=if(schedule.canExecute) Success else if(schedule.state=="expired") Color(0xFF9B3A3A) else Gold, fontSize=12.sp, fontWeight=FontWeight.Bold)
             Spacer(Modifier.height(16.dp))
-            Button(onClick = { onMission(m) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(11.dp), colors = ButtonDefaults.buttonColors(containerColor = Navy)) {
-                Text(if (m.submitted) "مشاهده مأموریت" else "شروع بازرسی", fontWeight = FontWeight.Bold)
+            Button(onClick = { onMission(m) }, enabled=schedule.canExecute, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(11.dp), colors = ButtonDefaults.buttonColors(containerColor = Navy)) {
+                Text(when(schedule.state){"expired"->"ماموریت منقضی شده";"upcoming"->"در انتظار روز مأموریت";else->"شروع بازرسی"}, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -452,16 +483,16 @@ private fun MissionHighlight(m: MissionEntity, onMission: (MissionEntity) -> Uni
 
 @Composable
 private fun MissionListCard(m: MissionEntity, onMission: (MissionEntity) -> Unit) {
-    Card(onClick = { onMission(m) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(1.dp)) {
+    val schedule=missionSchedule(m)
+    Card(onClick = { if(schedule.canExecute) onMission(m) }, enabled=schedule.canExecute, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(1.dp)) {
         Column(Modifier.padding(15.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(m.title, fontWeight = FontWeight.Bold, color = Navy, modifier = Modifier.weight(1f))
-                Surface(color = if (m.submitted) Color(0xFFE9F4EF) else SoftGold, shape = RoundedCornerShape(9.dp)) {
-                    Text(if (m.submitted) "ارسال شده" else "فعال", Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = if (m.submitted) Success else Color(0xFF8A641F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Surface(color = if(schedule.state=="expired") Color(0xFFF7E8E8) else if(schedule.state=="upcoming") Color(0xFFF0F2F5) else SoftGold, shape = RoundedCornerShape(9.dp)) {
+                    Text(schedule.label, Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = if(schedule.state=="expired") Color(0xFF9B3A3A) else if(schedule.state=="active") Success else Muted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Text("${m.date}  •  ${m.type}", color = Muted, fontSize = 12.sp)
+            Spacer(Modifier.height(8.dp)); Text("${m.date}  •  ${m.type}", color = Muted, fontSize = 12.sp)
         }
     }
 }
@@ -556,21 +587,25 @@ private fun EmptyState(text: String) {
 
 
 @Composable
-private fun GovernorPanel(state: UiState, tab: String) {
+private fun GovernorPanel(state: UiState, tab: String, vm: BazrViewModel) {
     val root = remember(state.governorPayload) { runCatching { org.json.JSONObject(state.governorPayload) }.getOrElse { org.json.JSONObject() } }
     val orgs = root.optJSONArray("organizations") ?: org.json.JSONArray()
     val reports = root.optJSONArray("reports") ?: org.json.JSONArray()
     val alerts = root.optJSONArray("alerts") ?: org.json.JSONArray()
     when (tab) {
-        "reports" -> GovernorReports(reports)
+        "reports" -> GovernorReports(reports, vm)
         "orgs" -> GovernorOrganizations(orgs, reports)
         "alerts" -> GovernorAlerts(alerts)
-        else -> GovernorHome(state, orgs, reports, alerts)
+        else -> GovernorHome(state, orgs, reports, alerts, vm)
     }
 }
 
 @Composable
-private fun GovernorHome(state: UiState, orgs: org.json.JSONArray, reports: org.json.JSONArray, alerts: org.json.JSONArray) {
+private fun GovernorHome(state: UiState, orgs: org.json.JSONArray, reports: org.json.JSONArray, alerts: org.json.JSONArray, vm: BazrViewModel) {
+    val root = remember(state.governorPayload) { runCatching { org.json.JSONObject(state.governorPayload) }.getOrElse { org.json.JSONObject() } }
+    val analytics = root.optJSONObject("analytics") ?: org.json.JSONObject()
+    val avgScore = analytics.optDouble("average_score", Double.NaN)
+    val criticalAlerts = analytics.optInt("critical_alerts", 0)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { PageIntro("داشبورد فرماندار", state.name.ifBlank { "فرمانداری شهرستان جوانرود" }, "نمای فقط‌خواندنی وضعیت بازرسی دستگاه‌های شهرستان") }
         if (state.message.isNotBlank()) item { StatusBanner(state.message) }
@@ -586,9 +621,15 @@ private fun GovernorHome(state: UiState, orgs: org.json.JSONArray, reports: org.
                 SummaryCard("ماموریت‌ها", state.missions.size.toString(), "کل مأموریت", Modifier.weight(1f))
             }
         }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                SummaryCard("میانگین شهرستان", if(avgScore.isNaN()) "—" else String.format("%.1f",avgScore), "از ۱۰۰", Modifier.weight(1f))
+                SummaryCard("بحرانی", criticalAlerts.toString(), "هشدار فوری", Modifier.weight(1f))
+            }
+        }
         item { SectionTitle("آخرین گزارش‌های بازرسی", "نمای مدیریتی") }
         if (reports.length()==0) item { EmptyState("هنوز گزارش نهایی در سرور ثبت نشده است.") }
-        else items((0 until minOf(reports.length(),5)).toList()) { i -> GovernorReportCard(reports.optJSONObject(i)) }
+        else items((0 until minOf(reports.length(),5)).toList()) { i -> GovernorReportCard(reports.optJSONObject(i), vm) }
         item {
             FormalCard {
                 AccentLabel("دسترسی فقط‌خواندنی")
@@ -600,27 +641,59 @@ private fun GovernorHome(state: UiState, orgs: org.json.JSONArray, reports: org.
 }
 
 @Composable
-private fun GovernorReports(reports: org.json.JSONArray) {
+private fun GovernorReports(reports: org.json.JSONArray, vm: BazrViewModel) {
+    var selected by remember { mutableStateOf<org.json.JSONObject?>(null) }
+    val chosen=selected
+    if(chosen!=null){ GovernorReportDetail(chosen,vm,onBack={selected=null}); return }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { PageIntro("گزارش‌های نهایی", "گزارش‌های ارسالی بازرسان", "نسخه فقط‌خواندنی گزارش‌های ثبت‌شده روی سرور") }
-        if (reports.length()==0) item { EmptyState("گزارشی ثبت نشده است.") }
-        else items((0 until reports.length()).toList()) { i -> GovernorReportCard(reports.optJSONObject(i)) }
+        item { PageIntro("گزارش‌های بازرسی", "نسخه نهایی و فقط‌خواندنی", "امتیاز، توضیحات، عکس‌ها، مستندات و امضای بازرس") }
+        if(reports.length()==0) item { EmptyState("گزارشی ثبت نشده است.") }
+        else items((0 until reports.length()).toList()) { i -> GovernorReportCard(reports.optJSONObject(i),vm,onOpen={selected=reports.optJSONObject(i)}) }
     }
 }
 
 @Composable
-private fun GovernorReportCard(o: org.json.JSONObject?) {
-    val x=o?:org.json.JSONObject()
-    val payload=x.optJSONObject("payload")?:org.json.JSONObject()
-    val score = payload.optDouble("score", Double.NaN)
-    FormalCard {
+private fun GovernorReportCard(o: org.json.JSONObject?, vm: BazrViewModel, onOpen:(()->Unit)?=null) {
+    val x=o?:org.json.JSONObject(); val payload=x.optJSONObject("payload")?:org.json.JSONObject(); val score = payload.optDouble("score", Double.NaN)
+    Card(onClick={onOpen?.invoke()}, enabled=onOpen!=null, modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(18.dp),colors=CardDefaults.cardColors(containerColor=Color.White),elevation=CardDefaults.cardElevation(2.dp)) {
+      Column(Modifier.padding(18.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(payload.optString("orgName", "گزارش بازرسی"), fontWeight = FontWeight.ExtraBold, color = Navy, modifier = Modifier.weight(1f))
             Surface(color=SoftGold, shape=RoundedCornerShape(9.dp)) { Text(if(score.isNaN()) "نهایی" else score.toInt().toString(), Modifier.padding(horizontal=9.dp,vertical=4.dp), color=Color(0xFF8A641F), fontWeight=FontWeight.Bold) }
         }
-        Spacer(Modifier.height(7.dp))
-        Text("رسید: ${x.optString("receipt_code","—")}", color=Muted, fontSize=12.sp)
-        Text("تاریخ ارسال: ${x.optString("submitted_at","—")}", color=Muted, fontSize=12.sp)
+        Spacer(Modifier.height(7.dp)); Text("رسید: ${x.optString("receipt_code","—")}", color=Muted, fontSize=12.sp); Text("تاریخ ارسال: ${x.optString("submitted_at","—")}", color=Muted, fontSize=12.sp)
+        if(onOpen!=null){Spacer(Modifier.height(8.dp));Text("مشاهده پاسخ‌ها و مستندات ←",color=Gold,fontSize=12.sp,fontWeight=FontWeight.Bold)}
+      }
+    }
+}
+
+@Composable
+private fun GovernorReportDetail(x:org.json.JSONObject,vm:BazrViewModel,onBack:()->Unit){
+    val payload=x.optJSONObject("payload")?:org.json.JSONObject(); val mission=x.optJSONObject("mission")?:org.json.JSONObject(); val answers=payload.optJSONObject("answers")?:org.json.JSONObject(); val notes=payload.optJSONObject("notes")?:org.json.JSONObject(); val uploads=x.optJSONArray("uploads")?:org.json.JSONArray()
+    val snap=mission.optJSONObject("checklistSnapshot"); val questions=snap?.optJSONArray("questions")
+    val qText=mutableMapOf<String,String>(); if(questions!=null)for(i in 0 until questions.length()){val q=questions.optJSONObject(i)?:continue;qText[q.optString("id")]=q.optString("text")}
+    val keys=mutableListOf<String>(); val en=answers.keys(); while(en.hasNext())keys+=en.next()
+    LazyColumn(Modifier.fillMaxSize(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+      item { TextButton(onClick=onBack){Text("‹ بازگشت به گزارش‌ها")}; PageIntro(payload.optString("orgName","گزارش بازرسی"),"گزارش نهایی و قفل‌شده","فرماندار فقط امکان مشاهده و دریافت مستندات را دارد."); StatusBanner("کد رسید: ${x.optString("receipt_code","—")}") }
+      items(keys){qid->
+        val score=answers.optInt(qid,-1); val note=notes.optString(qid,""); val files=(0 until uploads.length()).mapNotNull{uploads.optJSONObject(it)}.filter{it.optString("question_id")==qid}
+        FormalCard { Text(qText[qid]?:"سؤال $qid",fontWeight=FontWeight.Bold,color=Navy);Spacer(Modifier.height(5.dp));Text("امتیاز: ${if(score>=0) score else "—"} از 100",color=Gold,fontWeight=FontWeight.Bold);if(note.isNotBlank()){Spacer(Modifier.height(4.dp));Text("توضیح: $note",color=Muted,fontSize=12.sp)};if(files.isNotEmpty()){Spacer(Modifier.height(10.dp));Text("مستندات",fontWeight=FontWeight.Bold,color=Ink,fontSize=12.sp);Spacer(Modifier.height(6.dp));files.forEach{GovernorEvidenceItem(it,vm)}} }
+      }
+      val signature=(0 until uploads.length()).mapNotNull{uploads.optJSONObject(it)}.firstOrNull{it.optString("question_id")=="__signature"}
+      if(signature!=null)item{FormalCard{Text("امضای بازرس",fontWeight=FontWeight.Bold,color=Navy);Spacer(Modifier.height(8.dp));GovernorEvidenceItem(signature,vm)}}
+    }
+}
+
+@Composable
+private fun GovernorEvidenceItem(file:org.json.JSONObject,vm:BazrViewModel){
+    val id=file.optInt("id");val mime=file.optString("mime");val kind=file.optString("kind");val name=file.optString("name","مستند"); val context=androidx.compose.ui.platform.LocalContext.current;val scope=rememberCoroutineScope()
+    if(kind=="image"||mime.startsWith("image/")){
+      var bytes by remember(id){mutableStateOf<ByteArray?>(null)};var failed by remember(id){mutableStateOf(false)}
+      LaunchedEffect(id){runCatching{vm.governorFileBytes(id)}.onSuccess{bytes=it}.onFailure{failed=true}}
+      val bmp=remember(bytes){bytes?.let{BitmapFactory.decodeByteArray(it,0,it.size)?.asImageBitmap()}}
+      if(bmp!=null) Image(bitmap=bmp,contentDescription=name,modifier=Modifier.fillMaxWidth().heightIn(max=190.dp).clip(RoundedCornerShape(10.dp)),contentScale=ContentScale.Fit) else Text(if(failed)"تصویر قابل دریافت نیست" else "در حال دریافت تصویر…",color=Muted,fontSize=11.sp)
+    }else{
+      OutlinedButton(onClick={scope.launch{runCatching{vm.governorFileToCache(id,name)}.onSuccess{f->runCatching{val uri=FileProvider.getUriForFile(context,"${context.packageName}.fileprovider",f);val intent=Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime.ifBlank{"application/octet-stream"}).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);context.startActivity(intent)}}}},modifier=Modifier.fillMaxWidth()){Text("📎 مشاهده / دریافت: $name")}
     }
 }
 

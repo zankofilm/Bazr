@@ -103,6 +103,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
     var previewPdfPath by rememberSaveable(mission.key, "previewPdf") { mutableStateOf("") }
     var previewImagePath by rememberSaveable(mission.key, "previewImage") { mutableStateOf("") }
     var showSignature by rememberSaveable(mission.key, "showSignature") { mutableStateOf(false) }
+    var startLocationJson by rememberSaveable(mission.key, "startLocation") { mutableStateOf("") }
 
     if (previewImagePath.isNotBlank()) {
         val previewBitmap = remember(previewImagePath) { decodeEvidenceThumbnail(previewImagePath, 1600) }
@@ -149,9 +150,25 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
     fun currentPageValid(): Boolean {
         if (sections.isEmpty()) return true
         val currentIds = sections[currentPage].value.map { it.id }.toSet()
-        val missing = currentIds.any { id -> (answers[id] ?: 80) < 60 && notes[id].isNullOrBlank() }
-        if (missing) validationMessage = "برای امتیازهای کمتر از ۶۰ در این محور، توضیح الزامی را تکمیل کنید."
-        return !missing
+        val lowWithoutNote = currentIds.any { id -> (answers[id] ?: 80) < 60 && notes[id].isNullOrBlank() }
+        val criticalWithoutEvidence = currentIds.any { id -> (answers[id] ?: 80) < 30 && evidence[id].orEmpty().isEmpty() }
+        validationMessage = when {
+            lowWithoutNote -> "برای امتیازهای کمتر از ۶۰ در این محور، توضیح الزامی را تکمیل کنید."
+            criticalWithoutEvidence -> "برای امتیازهای بحرانی کمتر از ۳۰، حداقل یک عکس یا مستند الزامی است."
+            else -> ""
+        }
+        return !lowWithoutNote && !criticalWithoutEvidence
+    }
+
+    fun fullReportValid(): Boolean {
+        val lowWithoutNote = answers.any { (id, score) -> score < 60 && notes[id].isNullOrBlank() }
+        val criticalWithoutEvidence = answers.any { (id, score) -> score < 30 && evidence[id].orEmpty().isEmpty() }
+        validationMessage = when {
+            lowWithoutNote -> "برای تمام امتیازهای کمتر از ۶۰، توضیح الزامی را تکمیل کنید."
+            criticalWithoutEvidence -> "برای تمام امتیازهای بحرانی کمتر از ۳۰، حداقل یک عکس یا مستند ثبت کنید."
+            else -> ""
+        }
+        return !lowWithoutNote && !criticalWithoutEvidence
     }
 
 
@@ -162,7 +179,8 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
             onCancel = { showSignature = false },
             onSaveAndSend = { signatureFile ->
                 showSignature = false
-                vm.finalSubmit(mission, answers, notes, evidence, signatureFile)
+                val endLocation = LocationCapture.snapshot(context)?.toString().orEmpty()
+                vm.finalSubmit(mission, answers, notes, evidence, signatureFile, startLocationJson, endLocation)
             }
         )
         return
@@ -243,6 +261,19 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
                         Text(mission.title, fontWeight = FontWeight.ExtraBold, color = FormNavy, fontSize = 17.sp)
                         Text("${mission.date}  •  ${mission.type}", color = FormMuted, fontSize = 11.sp)
                     }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 0.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = {
+                        if (activity == null) validationMessage = "ثبت موقعیت در این دستگاه در دسترس نیست."
+                        else activity.requestLocationPermissionCompat { granted ->
+                            if (!granted) validationMessage = "ثبت موقعیت اختیاری است؛ دسترسی موقعیت داده نشد."
+                            else {
+                                val loc = LocationCapture.snapshot(context)
+                                if (loc != null) { startLocationJson = loc.toString(); validationMessage = "موقعیت شروع بازرسی ثبت شد." }
+                                else validationMessage = "موقعیت فعلی هنوز توسط گوشی قابل دریافت نیست."
+                            }
+                        }
+                    }) { Text(if(startLocationJson.isBlank()) "ثبت موقعیت شروع (اختیاری)" else "✓ موقعیت شروع ثبت شد", color=FormGold, fontSize=11.sp, fontWeight=FontWeight.Bold) }
                 }
             }
 
@@ -439,9 +470,8 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
                         OutlinedButton(
                             onClick = {
                                 if (!currentPageValid()) return@OutlinedButton
-                                val allLowMissing = answers.any { (id, score) -> score < 60 && notes[id].isNullOrBlank() }
-                                if (allLowMissing) {
-                                    validationMessage = "برای تمام امتیازهای کمتر از ۶۰، توضیح الزامی را تکمیل کنید."
+                                if (!fullReportValid()) {
+                                    // پیام اعتبارسنجی در بالای فرم نمایش داده می‌شود.
                                 } else {
                                     runCatching { vm.createPreviewPdf(mission, answers, notes, evidence) }
                                         .onSuccess { pdf -> previewPdfPath = pdf.absolutePath; openReportPdf(context, pdf.absolutePath); validationMessage = "پیش‌نمایش PDF ساخته شد. پس از بررسی، ارسال نهایی را بزنید." }
@@ -474,9 +504,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
                                 if (currentPage < sections.lastIndex) {
                                     currentPage++
                                 } else {
-                                    val allLowMissing = answers.any { (id, score) -> score < 60 && notes[id].isNullOrBlank() }
-                                    if (allLowMissing) validationMessage = "برای تمام امتیازهای کمتر از ۶۰، توضیح الزامی را تکمیل کنید."
-                                    else showSignature = true
+                                    if (fullReportValid()) showSignature = true
                                 }
                             },
                             modifier = Modifier.weight(1.15f).height(48.dp),

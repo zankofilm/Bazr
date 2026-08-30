@@ -75,6 +75,13 @@ class ApiClient(private val security:DeviceSecurity){
         }
     }
     suspend fun uploadReportPdf(missionKey:String,file:File):JSONObject=uploadEvidence(missionKey,file,"application/pdf","","report_pdf","")
+
+    suspend fun downloadMobileFile(uploadId:Int):ByteArray=withContext(Dispatchers.IO){
+        val req=Request.Builder().url(BuildConfig.API_BASE_URL+"mobile_file.php?upload_id=$uploadId").get()
+            .header("Authorization","Bearer $sessionToken").build()
+        client.newCall(req).execute().use{r->if(!r.isSuccessful)throw ApiException(r.code,"HTTP_${r.code}");r.body?.bytes()?:ByteArray(0)}
+    }
+
     suspend fun attachReportPdf(missionKey:String,fileId:Int):JSONObject=withContext(Dispatchers.IO){
         postJson("mobile_report_attach.php",JSONObject().put("mission_key",missionKey).put("file_id",fileId),auth=true)
     }

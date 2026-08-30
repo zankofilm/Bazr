@@ -155,6 +155,18 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                 val remoteKeys = list.map { it.key }.filter { it.isNotBlank() }
                 if (remoteKeys.isEmpty()) db.missions().deleteAllActive() else db.missions().deleteActiveNotIn(remoteKeys)
                 if (list.isNotEmpty()) db.missions().putAll(list)
+                val remoteReports = sync.optJSONArray("reports")
+                if (remoteReports != null) {
+                    for (i in 0 until remoteReports.length()) {
+                        val rr = remoteReports.optJSONObject(i) ?: continue
+                        val mk = rr.optString("mission_key")
+                        if (mk.isBlank()) continue
+                        val st = rr.optString("review_status", "pending_review")
+                        val note = rr.optString("review_note", "")
+                        val at = rr.optString("reviewed_at", "")
+                        db.reports().updateReview(mk, st, note, at)
+                    }
+                }
                 val role = sync.optJSONObject("profile")?.optString("role")?.ifBlank { security.profileRole() } ?: security.profileRole()
                 _ui.value = _ui.value.copy(
                     phase = if (role == "governor") "governor" else "home",
@@ -173,6 +185,19 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
         }
+    }
+
+
+    suspend fun governorFileBytes(uploadId:Int):ByteArray {
+        val token=security.loadDeviceToken() ?: error("device token missing")
+        api.openSession(token)
+        return api.downloadMobileFile(uploadId)
+    }
+
+    suspend fun governorFileToCache(uploadId:Int,name:String):java.io.File {
+        val safe=name.replace(Regex("[^A-Za-z0-9._\u0600-\u06FF-]"),"_").ifBlank { "document_$uploadId" }
+        val dir=java.io.File(getApplication<Application>().cacheDir,"governor_files").apply{mkdirs()}
+        return java.io.File(dir,safe).apply{writeBytes(governorFileBytes(uploadId))}
     }
 
     suspend fun loadDraft(missionKey: String): DraftEntity? = db.drafts().get(missionKey)
@@ -201,7 +226,9 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
         answers: Map<String, Int>,
         notes: Map<String, String>,
         evidence: Map<String, List<EvidenceItem>> = emptyMap(),
-        signatureFile: java.io.File
+        signatureFile: java.io.File,
+        startLocationJson: String = "",
+        endLocationJson: String = ""
     ) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(
@@ -263,6 +290,11 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                         .put("notes", n)
                         .put("findings", JSONArray())
                         .put("uploads", uploaded)
+                        .apply {
+                            if (startLocationJson.isNotBlank()) put("start_location", JSONObject(startLocationJson))
+                            if (endLocationJson.isNotBlank()) put("end_location", JSONObject(endLocationJson))
+                            put("finished_at", java.time.Instant.now().toString())
+                        }
                 )
             }
             if (submitResult.isFailure) {
