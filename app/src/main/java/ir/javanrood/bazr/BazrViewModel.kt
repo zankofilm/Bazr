@@ -152,7 +152,9 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                 }
-                db.missions().putAll(list)
+                val remoteKeys = list.map { it.key }.filter { it.isNotBlank() }
+                if (remoteKeys.isEmpty()) db.missions().deleteAllActive() else db.missions().deleteActiveNotIn(remoteKeys)
+                if (list.isNotEmpty()) db.missions().putAll(list)
                 val role = sync.optJSONObject("profile")?.optString("role")?.ifBlank { security.profileRole() } ?: security.profileRole()
                 _ui.value = _ui.value.copy(
                     phase = if (role == "governor") "governor" else "home",

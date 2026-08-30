@@ -27,6 +27,8 @@ data class ReportEntity(
  @Insert(onConflict=OnConflictStrategy.REPLACE) suspend fun putAll(x:List<MissionEntity>)
  @Query("UPDATE missions SET submitted=1 WHERE `key`=:key") suspend fun markSubmitted(key:String)
  @Query("SELECT `key` FROM missions WHERE submitted=1") suspend fun submittedKeys():List<String>
+ @Query("DELETE FROM missions WHERE submitted=0") suspend fun deleteAllActive()
+ @Query("DELETE FROM missions WHERE submitted=0 AND `key` NOT IN (:keys)") suspend fun deleteActiveNotIn(keys:List<String>)
 }
 @Dao interface DraftDao{
  @Query("SELECT * FROM drafts WHERE missionKey=:key LIMIT 1") suspend fun get(key:String):DraftEntity?
