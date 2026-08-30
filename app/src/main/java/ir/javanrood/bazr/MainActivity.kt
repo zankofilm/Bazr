@@ -172,7 +172,7 @@ fun BazrApp(openBio: ((() -> Unit)) -> Unit, vm: BazrViewModel = viewModel()) {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Page) {
         Column(Modifier.fillMaxSize()) {
-            OfficialHeader()
+            OfficialHeader(onLogout = vm::logout, onRefresh = vm::refresh)
             if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Gold, trackColor = Navy2)
 
             when (state.phase) {
@@ -199,7 +199,7 @@ fun BazrApp(openBio: ((() -> Unit)) -> Unit, vm: BazrViewModel = viewModel()) {
                             "home" -> InspectorHome(state, onMission = { selectedMission = it })
                             "missions" -> MissionListPage(state.missions.filter { !it.submitted }, onMission = { selectedMission = it })
                             "inspections" -> PlaceholderPage("بازرسی‌ها", "پیش‌نویس‌ها و بازرسی‌های در حال انجام در این بخش نمایش داده می‌شود.")
-                            "reports" -> ReportsArchivePage(state.reports)
+                            "reports" -> ReportsArchivePage(state.reports, state.missions)
                         }
                     }
                     InspectorBottomNav(tab = tab, onSelect = { tab = it })
@@ -210,17 +210,45 @@ fun BazrApp(openBio: ((() -> Unit)) -> Unit, vm: BazrViewModel = viewModel()) {
 }
 
 @Composable
-fun OfficialHeader() {
+fun OfficialHeader(onLogout: (() -> Unit)? = null, onRefresh: (() -> Unit)? = null) {
     Surface(color = Navy, shadowElevation = 3.dp) {
         Column(Modifier.fillMaxWidth()) {
-            Image(
-                painter = painterResource(R.drawable.selected_header),
-                contentDescription = "سربرگ رسمی بازرسی ادارات",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(106.dp),
-                contentScale = ContentScale.FillBounds
-            )
+            Box(Modifier.fillMaxWidth().height(106.dp)) {
+                Image(
+                    painter = painterResource(R.drawable.selected_header),
+                    contentDescription = "سربرگ رسمی بازرسی ادارات",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.FillBounds
+                )
+                if (onLogout != null || onRefresh != null) {
+                    Surface(
+                        modifier = Modifier.align(Alignment.BottomStart).padding(end = 8.dp, bottom = 7.dp),
+                        color = Navy.copy(alpha = 0.98f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(Modifier.padding(3.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (onRefresh != null) {
+                                OutlinedButton(
+                                    onClick = onRefresh,
+                                    modifier = Modifier.height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 9.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Gold),
+                                    shape = RoundedCornerShape(7.dp)
+                                ) { Text("↻ بروزرسانی", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                            }
+                            if (onLogout != null) {
+                                OutlinedButton(
+                                    onClick = onLogout,
+                                    modifier = Modifier.height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 9.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.8f)),
+                                    shape = RoundedCornerShape(7.dp)
+                                ) { Text("خروج", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                            }
+                        }
+                    }
+                }
+            }
             Box(Modifier.fillMaxWidth().height(2.dp).background(Gold))
         }
     }
@@ -363,16 +391,18 @@ private fun MissionListPage(missions: List<MissionEntity>, onMission: (MissionEn
 }
 
 @Composable
-private fun ReportsArchivePage(reports: List<ReportEntity>) {
+private fun ReportsArchivePage(reports: List<ReportEntity>, missions: List<MissionEntity>) {
     val context = androidx.compose.ui.platform.LocalContext.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { PageIntro("گزارش‌ها و بایگانی", "گزارش‌های ارسال نهایی‌شده", "گزارش نهایی پس از ارسال از مأموریت‌های فعال خارج می‌شود و در این بخش ماندگار خواهد بود.") }
         if (reports.isEmpty()) item { EmptyState("هنوز گزارش نهایی بایگانی نشده است.") }
         items(reports, key = { it.missionKey }) { r ->
+            val mission = missions.firstOrNull { it.key == r.missionKey }
+            val orgName = mission?.let(::missionOrganizationName) ?: r.title.takeIf { it != "ماموریت بازرسی" && it != "مأموریت بازرسی" } ?: "نام اداره ثبت نشده"
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White), elevation = CardDefaults.cardElevation(1.dp)) {
                 Column(Modifier.padding(15.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(r.title, fontWeight = FontWeight.Bold, color = Navy, modifier = Modifier.weight(1f))
+                        Text("اداره بازرسی‌شده: $orgName", fontWeight = FontWeight.Bold, color = Navy, modifier = Modifier.weight(1f))
                         Surface(color = if (r.status == "complete") Color(0xFFE9F4EF) else SoftGold, shape = RoundedCornerShape(9.dp)) {
                             Text(if (r.status == "complete") "بایگانی شد" else "PDF در انتظار", Modifier.padding(horizontal = 9.dp, vertical = 4.dp), color = if (r.status == "complete") Success else Color(0xFF8A641F), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }

@@ -102,6 +102,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
     var showCamera by rememberSaveable(mission.key, "showCamera") { mutableStateOf(false) }
     var previewPdfPath by rememberSaveable(mission.key, "previewPdf") { mutableStateOf("") }
     var previewImagePath by rememberSaveable(mission.key, "previewImage") { mutableStateOf("") }
+    var showSignature by rememberSaveable(mission.key, "showSignature") { mutableStateOf(false) }
 
     if (previewImagePath.isNotBlank()) {
         val previewBitmap = remember(previewImagePath) { decodeEvidenceThumbnail(previewImagePath, 1600) }
@@ -151,6 +152,20 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
         val missing = currentIds.any { id -> (answers[id] ?: 80) < 60 && notes[id].isNullOrBlank() }
         if (missing) validationMessage = "برای امتیازهای کمتر از ۶۰ در این محور، توضیح الزامی را تکمیل کنید."
         return !missing
+    }
+
+
+    if (showSignature) {
+        SignatureScreen(
+            context = context,
+            mission = mission,
+            onCancel = { showSignature = false },
+            onSaveAndSend = { signatureFile ->
+                showSignature = false
+                vm.finalSubmit(mission, answers, notes, evidence, signatureFile)
+            }
+        )
+        return
     }
 
     if (showCamera) {
@@ -219,7 +234,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
 
     Surface(Modifier.fillMaxSize(), color = FormPage) {
         Column(Modifier.fillMaxSize()) {
-            OfficialHeader()
+            OfficialHeader(onLogout = { saveCurrentDraft(); vm.logout(); onBack() }, onRefresh = vm::refresh)
             Surface(color = Color.White, shadowElevation = 2.dp) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { saveCurrentDraft(); onBack() }) { Text("خروج از فرم", color = FormNavy, fontWeight = FontWeight.Bold) }
@@ -428,7 +443,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
                                 if (allLowMissing) {
                                     validationMessage = "برای تمام امتیازهای کمتر از ۶۰، توضیح الزامی را تکمیل کنید."
                                 } else {
-                                    runCatching { vm.createPreviewPdf(mission, answers, notes) }
+                                    runCatching { vm.createPreviewPdf(mission, answers, notes, evidence) }
                                         .onSuccess { pdf -> previewPdfPath = pdf.absolutePath; openReportPdf(context, pdf.absolutePath); validationMessage = "پیش‌نمایش PDF ساخته شد. پس از بررسی، ارسال نهایی را بزنید." }
                                         .onFailure { validationMessage = "ساخت پیش‌نمایش PDF انجام نشد: ${it.message.orEmpty()}" }
                                 }
@@ -461,7 +476,7 @@ fun MissionFormScreen(mission: MissionEntity, vm: BazrViewModel, onBack: () -> U
                                 } else {
                                     val allLowMissing = answers.any { (id, score) -> score < 60 && notes[id].isNullOrBlank() }
                                     if (allLowMissing) validationMessage = "برای تمام امتیازهای کمتر از ۶۰، توضیح الزامی را تکمیل کنید."
-                                    else vm.finalSubmit(mission, answers, notes, evidence)
+                                    else showSignature = true
                                 }
                             },
                             modifier = Modifier.weight(1.15f).height(48.dp),

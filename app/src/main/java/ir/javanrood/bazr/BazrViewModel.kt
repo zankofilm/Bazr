@@ -105,14 +105,31 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun biometricUnlocked() {
+    fun biometricUnlocked() = syncNow()
+
+    fun refresh() = syncNow()
+
+    fun logout() {
+        _ui.value = _ui.value.copy(phase = "biometric", busy = false, message = "از محیط کاری خارج شدید. برای ورود مجدد احراز هویت کنید.")
+    }
+
+    private fun syncNow() {
         val token = security.loadDeviceToken() ?: return
         viewModelScope.launch {
-            _ui.value = _ui.value.copy(busy = true, message = "اتصال به سرور و دریافت مأموریت‌ها…")
+            _ui.value = _ui.value.copy(busy = true, message = "اتصال به سرور و دریافت آخرین اطلاعات…")
             runCatching {
                 api.openSession(token)
                 api.sync()
             }.onSuccess { sync ->
+                val orgMap = mutableMapOf<String, String>()
+                sync.optJSONArray("organizations")?.let { orgs ->
+                    for (i in 0 until orgs.length()) {
+                        val o = orgs.optJSONObject(i) ?: continue
+                        val id = o.optString("id", o.optString("_server_key"))
+                        val name = o.optString("name", o.optString("title"))
+                        if (id.isNotBlank() && name.isNotBlank()) orgMap[id] = name
+                    }
+                }
                 val arr = sync.optJSONArray("missions")
                 val submittedKeys = db.missions().submittedKeys().toSet()
                 val list = mutableListOf<MissionEntity>()
@@ -120,9 +137,13 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                     for (i in 0 until arr.length()) {
                         val m = arr.getJSONObject(i)
                         val key = m.optString("_server_key", m.optString("id"))
+                        val orgId = m.optString("orgId", m.optString("org_id"))
+                        val resolvedOrg = orgMap[orgId]
+                            ?: missionOrganizationName(m, m.optString("title"))
+                        if (resolvedOrg.isNotBlank() && resolvedOrg != "نام اداره ثبت نشده") m.put("orgName", resolvedOrg)
                         list += MissionEntity(
                             key = key,
-                            title = m.optString("orgName", m.optString("title", "مأموریت بازرسی")),
+                            title = resolvedOrg,
                             date = m.optString("date"),
                             type = m.optString("type"),
                             payload = m.toString(),
@@ -138,7 +159,7 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                     role = role,
                     governorPayload = if (role == "governor") sync.toString() else "{}",
                     busy = false,
-                    message = "اطلاعات با سرور همگام شد."
+                    message = "اطلاعات با سرور بروزرسانی شد."
                 )
             }.onFailure {
                 val role = security.profileRole()
@@ -146,7 +167,7 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                     phase = if (role == "governor") "governor" else "home",
                     role = role,
                     busy = false,
-                    message = if (role == "governor") "اتصال به سرور برقرار نشد؛ برای داشبورد فرماندار اینترنت لازم است." else "آفلاین: مأموریت‌های ذخیره‌شده گوشی در دسترس است."
+                    message = if (role == "governor") "بروزرسانی انجام نشد؛ اتصال اینترنت را بررسی کنید." else "بروزرسانی انجام نشد؛ اطلاعات ذخیره‌شده گوشی همچنان در دسترس است. ${it.message.orEmpty()}"
                 )
             }
         }
@@ -173,7 +194,13 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun finalSubmit(mission: MissionEntity, answers: Map<String, Int>, notes: Map<String, String>, evidence: Map<String, List<EvidenceItem>> = emptyMap()) {
+    fun finalSubmit(
+        mission: MissionEntity,
+        answers: Map<String, Int>,
+        notes: Map<String, String>,
+        evidence: Map<String, List<EvidenceItem>> = emptyMap(),
+        signatureFile: java.io.File
+    ) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(
                 busy = true,
@@ -198,7 +225,8 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value = _ui.value.copy(submitProgress = 0.10f, submitStage = "برقراری اتصال امن با سرور")
                 api.openSession(token)
 
-                val allEvidence = evidence.flatMap { (qid, list) -> list.map { qid to it } }
+                val signatureItem = EvidenceItem(signatureFile.absolutePath, signatureFile.name, "image/png", "image")
+                val allEvidence = evidence.flatMap { (qid, list) -> list.map { qid to it } } + listOf("__signature" to signatureItem)
                 val uploaded = JSONArray()
                 if (allEvidence.isEmpty()) {
                     _ui.value = _ui.value.copy(submitProgress = 0.58f, submitStage = "مستندی برای بارگذاری وجود ندارد")
@@ -254,7 +282,7 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
 
             _ui.value = _ui.value.copy(submitProgress = 0.78f, submitStage = "ساخت PDF رسمی گزارش")
             val pdfResult = runCatching {
-                val pdf = OfficialReportPdf.create(getApplication(), mission, answers, notes, receipt, security.profileName())
+                val pdf = OfficialReportPdf.create(getApplication(), mission, answers, notes, evidence, signatureFile.absolutePath, receipt, security.profileName())
                 _ui.value = _ui.value.copy(submitProgress = 0.86f, submitStage = "بارگذاری PDF رسمی روی سرور")
                 val upload = api.uploadReportPdf(mission.key, pdf)
                 val fileId = upload.getInt("file_id")
@@ -291,8 +319,8 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(submitStatus = "idle")
     }
 
-    fun createPreviewPdf(mission: MissionEntity, answers: Map<String, Int>, notes: Map<String, String>): java.io.File {
-        return OfficialReportPdf.create(getApplication(), mission, answers, notes, "PREVIEW", security.profileName())
+    fun createPreviewPdf(mission: MissionEntity, answers: Map<String, Int>, notes: Map<String, String>, evidence: Map<String, List<EvidenceItem>> = emptyMap()): java.io.File {
+        return OfficialReportPdf.create(getApplication(), mission, answers, notes, evidence, "", "PREVIEW", security.profileName())
     }
 
 }

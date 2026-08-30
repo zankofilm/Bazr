@@ -2,6 +2,8 @@ package ir.javanrood.bazr
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
@@ -24,6 +26,8 @@ object OfficialReportPdf {
         mission: MissionEntity,
         answers: Map<String, Int>,
         notes: Map<String, String>,
+        evidence: Map<String, List<EvidenceItem>>,
+        signaturePath: String,
         receipt: String,
         inspectorName: String
     ): File {
@@ -82,9 +86,47 @@ object OfficialReportPdf {
             y += gap
         }
 
+        fun decodeForPdf(path: String, maxSide: Int = 700): Bitmap? {
+            val f = File(path)
+            if (!f.exists() || f.length() == 0L) return null
+            val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, b)
+            var sample = 1
+            while (b.outWidth / sample > maxSide * 2 || b.outHeight / sample > maxSide * 2) sample *= 2
+            return BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) })
+        }
+
+        fun drawEvidence(items: List<EvidenceItem>) {
+            if (items.isEmpty()) return
+            paragraph("پیوست‌های این سؤال:", mutedPaint, 3f, 10f)
+            items.forEach { item ->
+                if (item.kind == "image" && item.mime.startsWith("image/")) {
+                    val bitmap = decodeForPdf(item.path)
+                    if (bitmap != null) {
+                        val maxW = 105f
+                        val maxH = 78f
+                        val scale = minOf(maxW / bitmap.width.toFloat(), maxH / bitmap.height.toFloat(), 1f)
+                        val w = bitmap.width * scale
+                        val h = bitmap.height * scale
+                        need(h + 22f)
+                        val left = PAGE_W - MARGIN - w
+                        val top = y
+                        canvas!!.drawBitmap(bitmap, null, android.graphics.RectF(left, top, left + w, top + h), Paint(Paint.ANTI_ALIAS_FLAG))
+                        canvas!!.drawText("عکس مستند", left - 8f, top + 15f, Paint(mutedPaint).apply { textAlign = Paint.Align.RIGHT })
+                        y += h + 10f
+                        bitmap.recycle()
+                    } else {
+                        paragraph("عکس مستند: ${item.name}", mutedPaint, 3f, 10f)
+                    }
+                } else {
+                    paragraph("مستند PDF: ${item.name}", mutedPaint, 3f, 10f)
+                }
+            }
+        }
+
         startPage()
         paragraph(if (preview) "پیش‌نمایش گزارش قبل از ارسال نهایی" else "گزارش نهایی و قفل‌شده بازرسی", titlePaint, 6f)
-        paragraph("دستگاه: ${mission.title}", headPaint)
+        paragraph("اداره بازرسی‌شده: ${missionOrganizationName(mission)}", headPaint)
         paragraph("تاریخ مأموریت: ${mission.date.ifBlank { "-" }}     نوع: ${mission.type.ifBlank { "-" }}", bodyPaint)
         paragraph("بازرس: ${inspectorName.ifBlank { "بازرس" }}", bodyPaint)
         if (preview) paragraph("پیش‌نمایش - فاقد کد رسید و اعتبار نهایی", goldPaint, 8f) else paragraph("کد رسید سرور: $receipt", goldPaint, 8f)
@@ -109,13 +151,32 @@ object OfficialReportPdf {
                 paragraph("امتیاز: $score از 100", if (score < 60) Paint(goldPaint).apply { color = Color.rgb(170,55,55) } else goldPaint, 2f, 10f)
                 val note = notes[id].orEmpty().trim()
                 if (note.isNotBlank()) paragraph("توضیح بازرس: $note", bodyPaint, 5f, 10f)
+                drawEvidence(evidence[id].orEmpty())
                 canvas!!.drawLine(MARGIN, y, PAGE_W - MARGIN, y, linePaint); y += 10f
             }
         }
         val general = notes["general"].orEmpty().trim()
         if (general.isNotBlank()) { paragraph("یادداشت نهایی بازرس", headPaint); paragraph(general, bodyPaint, 8f) }
+
+        if (!preview && signaturePath.isNotBlank()) {
+            val sig = decodeForPdf(signaturePath, 1000)
+            if (sig != null) {
+                need(125f)
+                paragraph("امضای بازرس", headPaint, 4f)
+                val maxW = 180f
+                val maxH = 80f
+                val scale = minOf(maxW / sig.width.toFloat(), maxH / sig.height.toFloat(), 1f)
+                val w = sig.width * scale
+                val h = sig.height * scale
+                val left = PAGE_W - MARGIN - w
+                canvas!!.drawBitmap(sig, null, android.graphics.RectF(left, y, left + w, y + h), Paint(Paint.ANTI_ALIAS_FLAG))
+                y += h + 10f
+                sig.recycle()
+            }
+        }
+
         need(45f)
-        paragraph(if (preview) "این فایل فقط برای بازبینی پیش از ارسال نهایی است و اعتبار گزارش نهایی را ندارد." else "این نسخه پس از ارسال نهایی تولید شده و با کد رسید فوق قابل رهگیری است.", mutedPaint)
+        paragraph(if (preview) "این فایل فقط برای بازبینی پیش از ارسال نهایی است و اعتبار گزارش نهایی را ندارد." else "این نسخه پس از ثبت امضای بازرس و ارسال نهایی تولید شده و با کد رسید فوق قابل رهگیری است.", mutedPaint)
         page?.let { doc.finishPage(it) }
         FileOutputStream(file).use { doc.writeTo(it) }
         doc.close()
