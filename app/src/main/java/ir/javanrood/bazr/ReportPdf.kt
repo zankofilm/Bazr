@@ -37,6 +37,7 @@ object OfficialReportPdf {
         val safeReceipt = if (preview) "PREVIEW-${mission.key.takeLast(18).replace(Regex("[^A-Za-z0-9_-]"), "_")}" else receipt.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val file = File(dir, "BAZR-REPORT-$safeReceipt.pdf")
         val doc = PdfDocument()
+        try {
         var pageNo = 0
         var page: PdfDocument.Page? = null
         var canvas: android.graphics.Canvas? = null
@@ -180,7 +181,12 @@ object OfficialReportPdf {
         page?.let { doc.finishPage(it) }
         FileOutputStream(file).use { doc.writeTo(it) }
         doc.close()
+        if (!file.exists() || file.length() <= 0L) throw IllegalStateException("PDF file created but empty")
         return file
+        } catch (e: Exception) {
+            try { doc.close() } catch (_: Exception) {}
+            throw IllegalStateException("PDF generation failed: ${e.javaClass.simpleName}: ${e.message}", e)
+        }
     }
 }
 
