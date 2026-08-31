@@ -358,7 +358,7 @@ class BazrViewModel(app: Application) : AndroidViewModel(app) {
                     submitStage = "فرم ارسال شد؛ PDF نیازمند همگام‌سازی مجدد است",
                     lastReceipt = receipt,
                     submitStatus = "partial",
-                    message = "گزارش و مستندات با موفقیت ارسال شد (رسید: $receipt)، اما همگام‌سازی PDF کامل نشد."
+                    message = "گزارش ثبت شد (رسید: $receipt)، اما ساخت PDF خطا داد: ${it.message.orEmpty()}"
                 )
             }
         }
